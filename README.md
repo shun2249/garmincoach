@@ -229,7 +229,7 @@ $P kb stats
 
 `data/` 不進 git，所以知識庫另外走兩條路：
 
-- **預建包**：`kb download` 從 GitHub Release 抓 `knowledge.db.xz`（向量轉 float16、去掉可重建的全文索引後約 70 MB），驗 sha256、解壓、重建索引，放到 `data/knowledge.db`。已有論文的知識庫不會被覆蓋（`--force` 才會）。下載網址在 `KB_PACK_URL`，預設指向作者最近一次發布，期望的 sha256 釘在 `KB_PACK_SHA256`。
+- **預建包**：`kb download` 從 GitHub Release 抓 `knowledge.db.xz`（向量轉 float16、去掉可重建的全文索引後約 70 MB），驗 sha256、解壓、重建索引，放到 `data/knowledge.db`。已有論文的知識庫不會被覆蓋（`--force` 才會）。下載網址在 `KB_PACK_URL`，預設指向作者最近一次發布，404 時改抓 `KB_PACK_FALLBACK_URL`（作者 Dropbox 上的同一個檔）；期望的 sha256 釘在 `KB_PACK_SHA256`，兩個來源都要對得上。
 - **論文清單**：`kb/papers.tsv` 是知識庫的書目清單（進 git，約 470 KB），`kb build --manifest` 照清單向 PubMed / Europe PMC 抓同一批論文並自己向量化，不依賴 PubMed 當天的排序。
 - 作者更新知識庫後：`kb export`（產生 `data/export/knowledge.db.xz`、`.sha256`，以及 25 MiB 一片的 `.001`、`.002`… 分片）上傳到新的 Release（傳單檔或傳分片都可以，`kb download` 會自動接回來），改 `KB_PACK_URL` 預設值，`kb manifest` 重寫清單後 commit。
 

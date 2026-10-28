@@ -376,7 +376,7 @@ $P kb stats
 | 照清單重建 | `kb build --manifest` | 約 10 分鐘、embedding 約 US$0.11 | 同一批論文，自己向量化；Europe PMC 全文可能略有增減 |
 | 重新搜尋 | `kb build` | 約 15 分鐘、embedding 約 US$0.11 | 依 PubMed 當天排序，收錄不同 |
 
-`kb download` 從 `KB_PACK_URL`（預設作者在 GitHub Release 掛的 `knowledge.db.xz`，旁邊有 `.sha256`）下載到 `data/` 的暫存目錄，sha256 不符就中止（預設來源對 `KB_PACK_SHA256`，其他來源對網址旁的 `.sha256`，`--sha256` 可指定）；解壓後 `kb_fts` rebuild、`os.replace` 換成 `data/knowledge.db`。已有論文的知識庫不覆蓋，`--force` 才會；bot 跑著要重啟才用到新檔。`kb/papers.tsv` 是書目清單（PMID / PMCID / DOI / 年份 / 證據等級 / 是否有全文 / 主題 / 期刊 / 標題，約 470 KB），`kb build --manifest` 用 efetch 每批 100 篇抓，清單標 `fulltext=none` 的不再向 Europe PMC 試。
+`kb download` 從 `KB_PACK_URL`（預設作者在 GitHub Release 掛的 `knowledge.db.xz`，旁邊有 `.sha256`；404 時改抓 `KB_PACK_FALLBACK_URL`，目前是作者 Dropbox 的同一個檔）下載到 `data/` 的暫存目錄，sha256 不符就中止（預設來源對 `KB_PACK_SHA256`，其他來源對網址旁的 `.sha256`，`--sha256` 可指定）；解壓後 `kb_fts` rebuild、`os.replace` 換成 `data/knowledge.db`。已有論文的知識庫不覆蓋，`--force` 才會；bot 跑著要重啟才用到新檔。`kb/papers.tsv` 是書目清單（PMID / PMCID / DOI / 年份 / 證據等級 / 是否有全文 / 主題 / 期刊 / 標題，約 470 KB），`kb build --manifest` 用 efetch 每批 100 篇抓，清單標 `fulltext=none` 的不再向 Europe PMC 試。
 
 **發布知識庫（作者）**：`kb export` 把複本的向量轉 float16（餘弦誤差 < 2e-4，實測 20 組查詢 19 組前五名完全相同）、清掉可重建的 FTS 索引、VACUUM、xz 壓縮，約 25 秒得到 69 MB 的 `data/export/knowledge.db.xz`、`.sha256` 與 25 MiB 一片的 `.001`、`.002`… 分片；上傳到 tag `kb-YYYY-MM-DD` 的 GitHub Release（傳單檔或傳分片都可以，`kb download` 先抓單檔、404 就逐片抓再接起來），改 `config.KB_PACK_URL` / `KB_PACK_SHA256` 預設值與 `.env.example`，`kb manifest` 重寫清單後一起 commit。發布包內容是 PubMed 摘要與 Europe PMC 開放取用全文，版權屬出版者與作者，只供個人研究檢索。
 
@@ -787,6 +787,7 @@ scripts/botctl.sh status                                    # bot 在跑、沒�
 | WEB_SEARCH_COUNTRY / WEB_SEARCH_TIMEZONE | TW / Asia/Taipei | 搜尋結果偏向的國家與時區 |
 | PUBMED_EMAIL | 空 | kb build 時給 PubMed 的聯絡 email（選填） |
 | KB_PACK_URL | 作者的 GitHub Release | `kb download` 的來源（網址或本機 .xz） |
+| KB_PACK_FALLBACK_URL | 作者的 Dropbox 分享連結 | 預設來源 404 時改抓；空白 = 不備援 |
 | KB_PACK_SHA256 | 預設發布包的值 | 預設來源的期望 sha256；`kb download --sha256` 可指定，其他來源看網址旁的 `.sha256` |
 | TELEGRAM_BOT_TOKEN | （必填） | |
 | TELEGRAM_ALLOWED_USERS | （必填） | 數字 id 或 @username，逗號分隔 |

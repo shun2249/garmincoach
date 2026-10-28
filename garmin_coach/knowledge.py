@@ -761,7 +761,7 @@ def _expected_sha(src: str, local: Optional[Path]) -> Optional[str]:
 
 
 def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = False, sha256: Optional[str] = None) -> dict[str, Any]:
-    """下載（或從本機檔）安裝知識庫：單檔或分片 → 驗 sha256 → 解壓到暫存檔 → 重建 FTS → 換掉 data/knowledge.db。
+    """下載（或從本機檔）安裝知識庫：單檔或分片（預設來源 404 時改抓 KB_PACK_FALLBACK_URL）→ 驗 sha256 → 解壓到暫存檔 → 重建 FTS → 換掉 data/knowledge.db。
     已有論文的知識庫不覆蓋，除非 force。Telegram bot 跑著的話換完要重啟才會用到新檔。"""
     use_default = not src
     src = src or config.KB_PACK_URL
@@ -776,7 +776,14 @@ def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = Fals
     dst.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="kb_pack_", dir=str(dst.parent)))
     try:
-        packed = _fetch_pack(src, work)
+        try:
+            packed = _fetch_pack(src, work)
+        except requests.HTTPError as e:
+            if not (use_default and config.KB_PACK_FALLBACK_URL and e.response is not None and e.response.status_code == 404):
+                raise
+            log.info("預設來源 404（Release 還沒建？），改抓備援來源")
+            src = config.KB_PACK_FALLBACK_URL
+            packed = _fetch_pack(src, work)
         # 期望的 sha256：參數 > 預設網址的 KB_PACK_SHA256 > 網址（或檔案）旁邊的 .sha256；都沒有就不驗
         expected = (sha256 or "").strip().lower() or (config.KB_PACK_SHA256 if use_default else "") or _expected_sha(src, packed)
         actual = _sha256(packed)

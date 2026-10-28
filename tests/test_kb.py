@@ -115,6 +115,19 @@ try:
     K.import_pack(None, dst=tmp / "k11.db"); raise AssertionError("釘住的 sha256 不符應該失敗")
 except RuntimeError:
     pass
+# 預設來源 404 → 備援來源（仍用 KB_PACK_SHA256 驗）；非預設來源不備援
+config.KB_PACK_URL, config.KB_PACK_FALLBACK_URL, config.KB_PACK_SHA256 = "https://x/none.xz", "https://x/kb.xz", good_sha
+r = K.import_pack(None, dst=tmp / "k12.db")
+assert r["verified"] and r["source"] == "https://x/kb.xz" and r["stats"]["chunks"] == 5, r
+try:
+    K.import_pack("https://x/none.xz", dst=tmp / "k13.db"); raise AssertionError("指定來源 404 不該備援")
+except requests.HTTPError:
+    pass
+config.KB_PACK_FALLBACK_URL = ""
+try:
+    K.import_pack(None, dst=tmp / "k14.db"); raise AssertionError("沒有備援應該失敗")
+except requests.HTTPError:
+    pass
 requests.get = real_get
 pack.write_bytes(single)
 assert K._expected_sha(str(tmp / "nope.xz"), None) is None

@@ -16,7 +16,7 @@
 |---|---|
 | Garmin 同步 | 正常。token 快取在 `~/.garminconnect`，資料從 2025-04-22 起（fenix 8）。本地 60 天每日資料、341 筆活動（其中 65 筆有分段/區間/天氣/逐秒細節：10/7 之後全部、一年內 ≥15 km、近 90 天全部；其餘 276 筆只有清單摘要，`sync details` 可補）、783 筆指標歷史 |
 | AI 教練 | 正常。分流：簡單題 `gpt-6-luna`、深入題 `gpt-6.1-sol`（`classify_depth` 用 luna 分類，`OPENAI_ROUTER` 可關），萃取 luna。簡單題約 US$0.003、深入題 US$0.02–0.07 |
-| 知識庫 | 建好。2,285 篇論文（2016–2026，含運動醫學 4 主題）、664 篇有全文、21,543 段全部向量化，`data/knowledge.db` 217 MB。全文抓取失敗 142 篇（Europe PMC 500），`kb build --retry-errors` 可再補。公開版：`kb export` 打包成 69 MB 的 `knowledge.db.xz` 掛 GitHub Release（tag `kb-2026-10-28`），別人 `kb download`；論文清單 `kb/papers.tsv` 進 git |
+| 知識庫 | 建好。2,285 篇論文（2016–2026，含運動醫學 4 主題）、664 篇有全文、21,543 段全部向量化，`data/knowledge.db` 217 MB。全文抓取失敗 142 篇（Europe PMC 500），`kb build --retry-errors` 可再補。公開版：`kb export` 打包成 69 MB 的 `knowledge.db.xz`，預設抓 GitHub Release（tag `kb-2026-10-28`，2026-10-28 尚未建）、404 就抓備援 `KB_PACK_FALLBACK_URL`（作者 Dropbox `garmincoach-kb/` 的分享連結，已實測），別人 `kb download`；論文清單 `kb/papers.tsv` 進 git |
 | Telegram bot | 已上線（bot 帳號與白名單 user id 只在 `.env`）。由 `scripts/botctl.sh` 跑著；systemd 服務檔備好但未安裝（見 §7） |
 | 記憶內容 | 賽事數筆（A/B/C 優先級）、筆記若干、名詞數個、對話十餘段；內容只在本機 `data/garmin_coach.db` |
 | 網路搜尋 | 已做（2026-10-21）。`search_web` 工具：OpenAI Responses API 內建 `web_search` 的子請求（luna），閘門順序 快取 → 論文知識庫能否回答 → 每日 5 次 / 每段對話 3 次；結果（整理全文、搜尋動作、來源、引用、原始項目、用量、費用、向量）全部記在 `web_searches`。實測一次上網 US$0.04–0.05（4 次 web_search 呼叫，按 US$0.01/次估）、快取命中免費 |
@@ -197,6 +197,7 @@ python -m garmin_coach sync details --limit 50                # 剩下的分批�
 2. GitHub 建 Release，tag 用 `kb-YYYY-MM-DD`，上傳 `.sha256` 加上單檔或全部分片（檔名不要改；`import_pack` 先抓單檔，404 就逐片抓到 404 為止再接起來）。分片是因為對話介面傳檔上限 30 MiB，沒有這個限制就傳單檔。
 3. `config.py` 的 `KB_PACK_URL` 預設值改成新 tag、`KB_PACK_SHA256` 改成 export 印出的 sha256，`.env.example` 的範例跟著改。
 4. `python -m garmin_coach kb manifest` 重寫 `kb/papers.tsv`，連同上面的改動一起 commit。
+5. 備援：同一個檔也放到 Dropbox `~/Dropbox/garmincoach-kb/`，`dropbox sharelink` 產生連結、`dl=0` 改 `dl=1` 填進 `KB_PACK_FALLBACK_URL`（Release 還沒建或資產被刪時 `kb download` 會改抓這裡）。Dropbox 用戶端卡在「編列索引」時 `dropbox stop; dropbox start`。
 別人更新：`kb download --force`，再重啟 bot。
 
 ## 8. 測試
