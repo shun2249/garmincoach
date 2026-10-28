@@ -16,11 +16,11 @@
 |---|---|
 | Garmin 同步 | 正常。token 快取在 `~/.garminconnect`，資料從 2025-04-22 起（fenix 8）。本地 60 天每日資料、341 筆活動（其中 65 筆有分段/區間/天氣/逐秒細節：10/7 之後全部、一年內 ≥15 km、近 90 天全部；其餘 276 筆只有清單摘要，`sync details` 可補）、783 筆指標歷史 |
 | AI 教練 | 正常。分流：簡單題 `gpt-6-luna`、深入題 `gpt-6.1-sol`（`classify_depth` 用 luna 分類，`OPENAI_ROUTER` 可關），萃取 luna。簡單題約 US$0.003、深入題 US$0.02–0.07 |
-| 知識庫 | 建好。2,285 篇論文（2016–2026，含運動醫學 4 主題）、664 篇有全文、21,543 段全部向量化，`data/knowledge.db` 217 MB。全文抓取失敗 142 篇（Europe PMC 500），`kb build --retry-errors` 可再補 |
+| 知識庫 | 建好。2,285 篇論文（2016–2026，含運動醫學 4 主題）、664 篇有全文、21,543 段全部向量化，`data/knowledge.db` 217 MB。全文抓取失敗 142 篇（Europe PMC 500），`kb build --retry-errors` 可再補。公開版：`kb export` 打包成 69 MB 的 `knowledge.db.xz` 掛 GitHub Release（tag `kb-2026-10-28`），別人 `kb download`；論文清單 `kb/papers.tsv` 進 git |
 | Telegram bot | 已上線（bot 帳號與白名單 user id 只在 `.env`）。由 `scripts/botctl.sh` 跑著；systemd 服務檔備好但未安裝（見 §7） |
 | 記憶內容 | 賽事數筆（A/B/C 優先級）、筆記若干、名詞數個、對話十餘段；內容只在本機 `data/garmin_coach.db` |
 | 網路搜尋 | 已做（2026-10-21）。`search_web` 工具：OpenAI Responses API 內建 `web_search` 的子請求（luna），閘門順序 快取 → 論文知識庫能否回答 → 每日 5 次 / 每段對話 3 次；結果（整理全文、搜尋動作、來源、引用、原始項目、用量、費用、向量）全部記在 `web_searches`。實測一次上網 US$0.04–0.05（4 次 web_search 呼叫，按 US$0.01/次估）、快取命中免費 |
-| 測試 | `tests/run.sh` 六支離線測試全部通過 |
+| 測試 | `tests/run.sh` 七支離線測試全部通過 |
 
 ## 3. 目錄與模組地圖
 
@@ -83,6 +83,7 @@ garmin_project/
 ### 4.4 知識庫（RAG）
 - `TOPICS`（knowledge.py）14 個主題各一組 PubMed 查詢（10 個訓練/營養/恢復 + 4 個運動醫學：injury_running / injury_cycling / injury_prevention / sports_medicine，2026-10-20 加）；`kb build` 依主題抓 HQ（review/meta/RCT/systematic）與一般各 N 篇，有 PMCID 的從 Europe PMC 抓 JATS 全文。
 - 切段 2400 字/重疊 250；`text-embedding-3-small` 1536 維正規化 float32 存 BLOB；FTS5 做 BM25；查詢用 RRF 合併，每篇只回一段。
+- 發布（2026-10-28）：`export_pack` 把複本的向量轉 float16（餘弦誤差 < 2e-4，top-5 幾乎不變）、`kb_fts` delete-all、VACUUM、xz → 69 MB；`import_pack` 下載、對 `.sha256`、解壓、`kb_fts` rebuild（3 秒）、`os.replace` 換檔。`_vec()` 依 BLOB 長度判斷 float16 / float32，所以下載版之後 `kb build` 新增的 float32 段可以混用。`write_manifest` / `build_from_manifest`：`kb/papers.tsv` 只有書目；重建時 efetch 每批 100 篇，清單標 `fulltext=none` 的不再向 Europe PMC 試。
 - 模型透過 `search_knowledge(query, k, topic)` 查，把結論融進回答；2026-10-28 起規則 12 要求**不要**標作者年份或論文出處（之前是標「（第一作者 年份）」）。工具仍回傳 citation/pmid 給 get_paper 用。
 
 ### 4.5 網路搜尋（search_web，2026-10-21）
@@ -117,7 +118,7 @@ garmin_project/
 欄位由 Pydantic 模型自動產生；**在 models.py 加欄位，store 啟動時會自動 ALTER TABLE**。巢狀資料存 JSON 字串。
 
 ### data/knowledge.db
-`kb_papers`（pmid, title, abstract, authors(JSON), journal, year, doi, pmcid, pub_types, mesh, topics, fulltext_status）、`kb_chunks`（pmid, section, ord, text, embedding BLOB）、`kb_fts`（FTS5 外部內容表 + 觸發器）。
+`kb_papers`（pmid, title, abstract, authors(JSON), journal, year, doi, pmcid, pub_types, mesh, topics, fulltext_status）、`kb_chunks`（pmid, section, ord, text, embedding BLOB：自建 float32、下載版 float16，依長度判斷）、`kb_fts`（FTS5 外部內容表 + 觸發器；下載時重建）。
 
 ## 6. 設定（.env）
 
@@ -188,7 +189,15 @@ python -m garmin_coach sync details --limit 50                # 剩下的分批�
 `python -m garmin_coach reprocess` 用本地 raw 重算，不打 API。
 
 ### 備份
-`data/garmin_coach.db`（記憶都在這）定期備份；`knowledge.db` 可重建（`kb build`，embedding 約 US$0.11）。
+`data/garmin_coach.db`（記憶都在這）定期備份；`knowledge.db` 可重建（`kb build`，embedding 約 US$0.11）或 `kb download --force` 抓回發布版。
+
+### 發布知識庫（公開版）
+知識庫有更新（加主題、增量 build）後：
+1. `python -m garmin_coach kb export` → `data/export/knowledge.db.xz` + `.sha256`（約 25 秒，69 MB）。
+2. GitHub 建 Release，tag 用 `kb-YYYY-MM-DD`，兩個檔都上傳（資產名稱要維持 `knowledge.db.xz`）。
+3. `config.py` 的 `KB_PACK_URL` 預設值與 `.env.example` 的範例改成新 tag。
+4. `python -m garmin_coach kb manifest` 重寫 `kb/papers.tsv`，連同上面的改動一起 commit。
+別人更新：`kb download --force`，再重啟 bot。
 
 ## 8. 測試
 
@@ -203,6 +212,7 @@ tests/run.sh          # 三支全部跑，約 1–2 分鐘，不打任何外部 
 | tests/test_router.py | 分流規則、跨模型 raw items 轉換、模型選擇與 llm_calls 記帳 |
 | tests/test_reuse.py | 問答重用（假向量）：相似命中、「重新」、不相關 |
 | tests/test_web.py | 網路搜尋（假子模型 + 假向量）：知識庫擋下、放行並完整紀錄與費用、exact/相似/中間地帶快取、ignore_cache、cache_id、related_cached、未找到 TTL、每日與每段對話上限、關閉、失敗、Coach 整合、真實 API 回傳形狀解析 |
+| tests/test_kb.py | 知識庫發布（假論文 + 假向量）：float16 載入與混用、export↔download 往返、sha256 驗證、FTS 重建、覆蓋保護、論文清單寫讀與照清單重建 |
 
 都用 `data/garmin_coach.db` 的複本（TEST_DB 環境變數可指定）。**真實對話測試一律 `scripts/ask.py --copy`**，不要污染真實記憶。
 
@@ -268,7 +278,7 @@ tests/run.sh          # 三支全部跑，約 1–2 分鐘，不打任何外部 
 | ec50cd2 | 網路搜尋 search_web：websearch.py、pricing.py、web_searches 表、閘門/快取/紀錄、/web 與 `web` 指令、tests/test_web.py |
 | 90812be / 42d080c | 回覆篇幅 300–1500；MANUAL.md 產品說明書 |
 | 045c85e | 開新對話自動 sync（移除 /sync）；回答不標論文出處；閒置 30 分鐘；結束訊息只留摘要 |
-| （公開版） | 公開到 GitHub：README 改成新使用者導向、MIT 授權、tests/synth.py 合成資料庫（沒有真實 DB 也能跑測試）、WEB_SEARCH_COUNTRY/TIMEZONE 可設定、文件去除個人識別資料、git 歷史從單一 commit 重新開始 |
+| （公開版） | 公開到 GitHub：README 改成新使用者導向、MIT 授權、tests/synth.py 合成資料庫（沒有真實 DB 也能跑測試）、WEB_SEARCH_COUNTRY/TIMEZONE 可設定、文件去除個人識別資料、git 歷史從單一 commit 重新開始；知識庫發布：`kb export` / `kb download`（float16 打包 69 MB，GitHub Release）、`kb manifest` / `kb build --manifest`（`kb/papers.tsv` 論文清單）、tests/test_kb.py |
 
 ## 11a. 進行中的觀察（2026-10-20 起一週）
 

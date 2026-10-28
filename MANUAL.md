@@ -1,6 +1,6 @@
 # Garmin AI 教練 產品說明書
 
-版本日期：2026-10-28（commit `42d080c` 之後：自動同步、不標論文出處、閒置 30 分鐘、結束訊息只留摘要）。這份文件是交接用的完整說明：產品是什麼、怎麼裝、怎麼用、內部怎麼運作、怎麼維護。日常使用看 `README.md`，維護細節與踩過的坑看 `HANDOFF.md`，給 Claude Code 的守則在 `CLAUDE.md`；本文件把三者整合成一份可以獨立閱讀的手冊。
+版本日期：2026-10-28（commit `42d080c` 之後：自動同步、不標論文出處、閒置 30 分鐘、結束訊息只留摘要；公開版加知識庫下載與論文清單）。這份文件是交接用的完整說明：產品是什麼、怎麼裝、怎麼用、內部怎麼運作、怎麼維護。日常使用看 `README.md`，維護細節與踩過的坑看 `HANDOFF.md`，給 Claude Code 的守則在 `CLAUDE.md`；本文件把三者整合成一份可以獨立閱讀的手冊。
 
 ---
 
@@ -29,7 +29,7 @@ Garmin AI 教練是一套單人使用的個人耐力運動教練：把 Garmin Co
 | 主要套件 | garminconnect 0.3.2、openai 3.35.1、python-telegram-bot 22.3、pydantic 2.14 |
 | Garmin 資料 | 66 天每日資料、344 筆活動（約 65 筆有分段與逐秒細節）、783 筆指標歷史 |
 | 記憶 | 12 段對話、43 條筆記、6 個事件、10 個名詞 |
-| 知識庫 | 2,285 篇論文、664 篇有全文、21,543 段全部向量化，`knowledge.db` 217 MB |
+| 知識庫 | 2,285 篇論文、664 篇有全文、21,543 段全部向量化，`knowledge.db` 217 MB；發布包 `knowledge.db.xz` 69 MB（GitHub Release），論文清單 `kb/papers.tsv` |
 | 本月 OpenAI 費用 | US$0.955（142 次呼叫；luna 107 次 US$0.068、sol 35 次 US$0.887） |
 | Telegram bot | 由 `scripts/botctl.sh` 跑著（已連續執行 5 天）；systemd 服務檔備好但未安裝 |
 | 網路搜尋 | 功能已上線，真實資料庫尚無紀錄 |
@@ -137,10 +137,12 @@ $P stats                                                  # 確認筆數
 
 一筆活動約 6 次 Garmin 呼叫、一天約 8 次，每次間隔 0.4 秒；大量回補分批跑，避免 429。
 
-**第五步：知識庫**（選用但建議；沒有它教練還是能用，只是建議會變成經驗判斷）。二選一：從作者那裡複製現有的 `data/knowledge.db` 與 `data/knowledge_raw/`，或自己建：
+**第五步：知識庫**（選用但建議；沒有它教練還是能用，只是建議會變成經驗判斷，而且網路搜尋閘門算不到相似度會一律放行）。三選一：
 
 ```bash
-$P kb build            # 14 個主題各 120 高品質 + 60 一般篇，約 15 分鐘，embedding 約 US$0.11
+$P kb download         # 下載作者預建包（GitHub Release 的 knowledge.db.xz，約 70 MB）：驗 sha256、解壓、重建索引，約一分鐘、免費
+$P kb build --manifest # 照 kb/papers.tsv 的清單抓同一批論文再向量化：約 10 分鐘，embedding 約 US$0.11
+$P kb build            # 自己重搜 14 個主題各 120 高品質 + 60 一般篇：約 15 分鐘，embedding 約 US$0.11；收錄會和作者的不同
 $P kb stats
 ```
 
@@ -213,7 +215,7 @@ $P kb stats
 | `chat [activity_id] --model --deep-model --router --continue [ID] --no-weather` | 終端機對話，`/end` 結束 |
 | `scripts/ask.py "問題" [--copy] [--continue N] [--activity ID] [--mode] [--no-finish]` | 不進互動模式問一句；`--copy` 用資料庫複本 |
 | `tool list` / `tool preflight` / `tool NAME '{json}'` | 直接看 AI 工具的輸出 |
-| `kb topics\|build\|embed\|search\|stats` | 知識庫 |
+| `kb topics\|build [--manifest]\|download\|export\|manifest\|embed\|search\|stats` | 知識庫（建、下載發布包、打包、寫論文清單） |
 | `web list\|show ID\|search "..." --reason ...` | 網路搜尋紀錄；`search` 會真的上網並寫進真實資料庫 |
 | `cost` / `stats --weeks N` | 費用、資料庫統計與週負荷 |
 | `telegram` | 啟動 bot（平常用 `scripts/botctl.sh`） |
@@ -361,10 +363,22 @@ $P kb stats
 1. 每個主題向 PubMed E-utilities 查兩組：高品質（review / meta-analysis / RCT / systematic，`--hq` 預設 120 篇）與一般（`--general` 60 篇），`--since` 2016。
 2. 有 PMCID 的從 Europe PMC 抓 JATS 全文（`--no-fulltext` 跳過）；原始資料存 `data/knowledge_raw/`。
 3. 切段 2400 字、重疊 250（`CHUNK_CHARS` / `CHUNK_OVERLAP`），摘要永遠是第一段（section=abstract）。
-4. `text-embedding-3-small` 1536 維，正規化後 float32 存 BLOB；`kb embed` 可單獨補缺向量的段落。
+4. `text-embedding-3-small` 1536 維，正規化後 float32 存 BLOB（下載的發布包是 float16，載入時依 BLOB 長度判斷，兩種可混用）；`kb embed` 可單獨補缺向量的段落。
 5. FTS5 外部內容表做 BM25。
 
 建庫可重複執行，已存在的論文略過。注意：`kb build` 不帶 `--topics` 會重搜全部主題，PubMed 相關性排序會變，每次都可能多加幾百篇（2026-10-20 一次 +566 篇，embedding 約 US$0.04）。`--retry-errors` 只重試之前全文抓失敗的（目前 142 篇，Europe PMC 500），不重搜。
+
+**取得知識庫的三種方式**
+
+| 方式 | 指令 | 時間 / 費用 | 結果 |
+| --- | --- | --- | --- |
+| 下載發布包 | `kb download` | 約一分鐘、免費 | 和作者完全一樣（向量 float16） |
+| 照清單重建 | `kb build --manifest` | 約 10 分鐘、embedding 約 US$0.11 | 同一批論文，自己向量化；Europe PMC 全文可能略有增減 |
+| 重新搜尋 | `kb build` | 約 15 分鐘、embedding 約 US$0.11 | 依 PubMed 當天排序，收錄不同 |
+
+`kb download` 從 `KB_PACK_URL`（預設作者在 GitHub Release 掛的 `knowledge.db.xz`，旁邊有 `.sha256`）下載到 `data/` 的暫存目錄，sha256 不符就中止；解壓後 `kb_fts` rebuild、`os.replace` 換成 `data/knowledge.db`。已有論文的知識庫不覆蓋，`--force` 才會；bot 跑著要重啟才用到新檔。`kb/papers.tsv` 是書目清單（PMID / PMCID / DOI / 年份 / 證據等級 / 是否有全文 / 主題 / 期刊 / 標題，約 470 KB），`kb build --manifest` 用 efetch 每批 100 篇抓，清單標 `fulltext=none` 的不再向 Europe PMC 試。
+
+**發布知識庫（作者）**：`kb export` 把複本的向量轉 float16（餘弦誤差 < 2e-4，實測 20 組查詢 19 組前五名完全相同）、清掉可重建的 FTS 索引、VACUUM、xz 壓縮，約 25 秒得到 69 MB 的 `data/export/knowledge.db.xz` 與 `.sha256`；上傳到 tag `kb-YYYY-MM-DD` 的 GitHub Release，改 `config.KB_PACK_URL` 預設值與 `.env.example`，`kb manifest` 重寫清單後一起 commit。發布包內容是 PubMed 摘要與 Europe PMC 開放取用全文，版權屬出版者與作者，只供個人研究檢索。
 
 **檢索（`KnowledgeBase.search`）**
 
@@ -574,7 +588,7 @@ tail -50 data/logs/telegram_bot.log | grep -i "error\|warning"
 
 ## 11. 測試與驗證
 
-離線測試六支全部用資料庫複本與假模型，不打任何外部 API，約 1–2 分鐘；每個功能做完、commit 前都要跑。真實模型的對話測試一律用 `scripts/ask.py --copy`，不要污染真實記憶。
+離線測試七支全部用資料庫複本與假模型，不打任何外部 API，約 1–2 分鐘；每個功能做完、commit 前都要跑。真實模型的對話測試一律用 `scripts/ask.py --copy`，不要污染真實記憶。
 
 ```bash
 tests/run.sh
@@ -588,6 +602,7 @@ tests/run.sh
 | `tests/test_router.py` | 分流規則、跨模型 raw items 轉換、模型選擇與 llm_calls 記帳 |
 | `tests/test_reuse.py` | 問答重用（假向量）：相似命中、「重新」、不相關 |
 | `tests/test_web.py` | 網路搜尋（假子模型 + 假向量）：知識庫擋下、放行並完整紀錄與費用、exact / 相似 / 中間地帶快取、ignore_cache、cache_id、related_cached、未找到 TTL、每日與每段對話上限、關閉、失敗、Coach 整合、真實 API 回傳形狀解析 |
+| `tests/test_kb.py` | 知識庫發布（假論文 + 假向量）：float16 載入與混用、export↔download 往返、sha256 驗證、FTS 重建、覆蓋保護、論文清單寫讀與照清單重建 |
 
 `TEST_DB` 環境變數可指定複本來源，預設複製 `data/garmin_coach.db`。
 
@@ -703,6 +718,7 @@ home 目錄本身是個沒有 remote 的 git repo，已在 `~/.git/info/exclude`
 | 改分流 | `ROUTER_PROMPT`、`classify_depth`、`_FOLLOWUP` | `tests/test_router.py` |
 | 換模型 | `.env` 的 `OPENAI_MODEL` / `OPENAI_DEEP_MODEL` / `OPENAI_EXTRACT_MODEL` / `WEB_SEARCH_MODEL` | 新模型要先加進 `pricing.PRICES`，否則費用記 0；非 Responses API 的模型不支援 |
 | 改知識庫主題 | `knowledge.TOPICS` 加 key 與 PubMed 查詢 | `kb build --topics NEW`；`tools.py` 的 `_KB_TOPICS` enum 跟著 TOPICS；必要時在規則 12 提到 |
+| 更新發布的知識庫 | `kb export` → GitHub Release（tag `kb-YYYY-MM-DD`）→ 改 `config.KB_PACK_URL` 與 `.env.example` → `kb manifest` | 第 7 節；別人 `kb download --force` 後重啟 bot |
 | 改切段或 embedding 模型 | `knowledge.py` 的 `CHUNK_CHARS` / `EMBED_MODEL` | 全部重建（`kb build`，原始資料在 knowledge_raw 不用重抓）；**網路搜尋門檻要重新校準**（下段） |
 | 改網路搜尋閘門 | `.env` 的 WEB_* 變數；流程在 `tools.py` `search_web`；提示詞在 `websearch.py` | `tests/test_web.py`；用 `web search ... --reason` 實測（會花錢、寫真實 DB） |
 | 加 Telegram 指令 | `telegram_bot.py`：`CoachService` 加方法（在 worker thread 跑）、`CoachBot.cmd_*`、handler 表、`BotCommand` 清單、`HELP` | `tests/test_telegram.py` |
@@ -731,7 +747,7 @@ cd ~/garmin_project && git status && git log --oneline -3    # 工作樹乾淨�
 ls -la .env && grep -c . .env                               # 秘密檔存在、權限 600
 .venv/bin/python -m garmin_coach stats                      # 資料庫正常，筆數合理
 .venv/bin/python -m garmin_coach sync daily                 # Garmin token 有效（失效會要 MFA）
-tests/run.sh                                                # 六支離線測試全過
+tests/run.sh                                                # 七支離線測試全過
 .venv/bin/python scripts/ask.py --copy "今天狀況如何"          # OpenAI 正常，教練有回答並印費用
 scripts/botctl.sh status                                    # bot 在跑、沒有重複程序；Telegram 按 /status 有回
 .venv/bin/python -m garmin_coach cost                       # 費用記帳正常
@@ -758,7 +774,6 @@ scripts/botctl.sh status                                    # bot 在跑、沒�
 | OPENAI_REASONING | （空） | none / low / medium / high |
 | OPENAI_DAILY_BUDGET_USD | 2 | 每日費用上限，0 = 不限 |
 | REUSE_SIMILARITY / REUSE_DAYS | 0 / 30 | 問答重用，0 = 關閉 |
-| PUBMED_EMAIL | （空） | PubMed 禮貌參數 |
 | WEB_SEARCH_ENABLED | 1 | 網路搜尋總開關 |
 | WEB_SEARCH_MODEL | （空 = OPENAI_MODEL） | 子請求模型 |
 | WEB_SEARCH_CONTEXT | medium | low / medium / high |
@@ -771,6 +786,7 @@ scripts/botctl.sh status                                    # bot 在跑、沒�
 | WEB_KB_FLOOR | 0.45 | 知識庫最高相似度低於此直接放行 |
 | WEB_SEARCH_COUNTRY / WEB_SEARCH_TIMEZONE | TW / Asia/Taipei | 搜尋結果偏向的國家與時區 |
 | PUBMED_EMAIL | 空 | kb build 時給 PubMed 的聯絡 email（選填） |
+| KB_PACK_URL | 作者的 GitHub Release | `kb download` 的來源（網址或本機 .xz） |
 | TELEGRAM_BOT_TOKEN | （必填） | |
 | TELEGRAM_ALLOWED_USERS | （必填） | 數字 id 或 @username，逗號分隔 |
 | TELEGRAM_IDLE_MINUTES | 30 | 閒置自動結束並整理記憶 |

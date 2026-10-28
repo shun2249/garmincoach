@@ -9,3 +9,4 @@ echo "== telegram（假 LLM + 假 Telegram：指令流程）";             $PY t
 echo "== router（假 LLM：分流規則 / 跨模型上下文 / 模型選擇）";      $PY tests/test_router.py 2>/dev/null | tail -1
 echo "== reuse（假 LLM + 假向量：相似問題重用 / 重新 / 不相關）";       $PY tests/test_reuse.py 2>/dev/null | tail -1
 echo "== web（假子模型：網路搜尋閘門 / 快取 / 完整紀錄 / API 解析）";     $PY tests/test_web.py 2>/dev/null | tail -1
+echo "== kb（假論文 + 假向量：float16 載入 / export↔download 往返 / sha256 / 論文清單重建）"; $PY tests/test_kb.py 2>/dev/null | tail -1

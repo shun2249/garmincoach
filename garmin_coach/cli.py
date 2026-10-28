@@ -227,17 +227,34 @@ def cmd_tool(args: argparse.Namespace) -> None:
 
 
 def cmd_kb(args: argparse.Namespace) -> None:
-    from .knowledge import TOPICS, Embedder, KnowledgeBase, build
+    from .knowledge import KB_DB, KB_MANIFEST, TOPICS, Embedder, KnowledgeBase, build, build_from_manifest, export_pack, import_pack, write_manifest
+    if args.kb_cmd == "download":        # 不先開 KnowledgeBase（會建空檔）
+        r = import_pack(args.source, force=args.force)
+        st = r.pop("stats")
+        r.update({"papers": st["papers"], "with_fulltext": st["with_fulltext"], "chunks": st["chunks"], "embedded": st["embedded"]})
+        _print_json(r)
+        print("（Telegram bot 跑著的話要 scripts/botctl.sh restart 才會用到新知識庫）")
+        return
+    if args.kb_cmd == "export":
+        _print_json(export_pack(KB_DB, args.out, fp16=not args.fp32))
+        return
     kb = KnowledgeBase()
     try:
         if args.kb_cmd == "topics":
             for k, v in TOPICS.items():
                 print(f"{k:<20} {v['label']}")
         elif args.kb_cmd == "build":
-            topics = args.topics.split(",") if args.topics else ([] if args.retry_errors else None)   # 只給 --retry-errors 就不重搜
-            r = build(kb, topics, per_topic_hq=args.hq, per_topic_general=args.general, since=args.since,
-                      fulltext=not args.no_fulltext, embed=not args.no_embed, retry_errors=args.retry_errors)
+            if args.manifest is not None:
+                r = build_from_manifest(kb, args.manifest or KB_MANIFEST, fulltext=not args.no_fulltext, embed=not args.no_embed,
+                                        retry_errors=args.retry_errors)
+            else:
+                topics = args.topics.split(",") if args.topics else ([] if args.retry_errors else None)   # 只給 --retry-errors 就不重搜
+                r = build(kb, topics, per_topic_hq=args.hq, per_topic_general=args.general, since=args.since,
+                          fulltext=not args.no_fulltext, embed=not args.no_embed, retry_errors=args.retry_errors)
             _print_json(r)
+        elif args.kb_cmd == "manifest":
+            n = write_manifest(kb, args.out or KB_MANIFEST)
+            print(f"寫入 {n} 篇 → {args.out or KB_MANIFEST}")
         elif args.kb_cmd == "embed":
             print("embedded:", kb.embed_missing(Embedder()))
         elif args.kb_cmd == "search":
@@ -366,6 +383,15 @@ def build_parser() -> argparse.ArgumentParser:
     kbld.add_argument("--since", type=int, default=2016)
     kbld.add_argument("--no-fulltext", action="store_true"); kbld.add_argument("--no-embed", action="store_true")
     kbld.add_argument("--retry-errors", action="store_true", help="重試之前抓全文失敗（500）的論文")
+    kbld.add_argument("--manifest", nargs="?", const="", metavar="TSV", help="照論文清單抓同一批論文（預設 kb/papers.tsv），不重搜 PubMed")
+    kdl = ksp.add_parser("download", help="下載預建知識庫（GitHub Release 的 knowledge.db.xz）並安裝到 data/")
+    kdl.add_argument("source", nargs="?", help="網址或本機 .xz 檔；預設 KB_PACK_URL")
+    kdl.add_argument("--force", action="store_true", help="覆蓋已有論文的知識庫")
+    kex = ksp.add_parser("export", help="把知識庫打包成 knowledge.db.xz（+ .sha256）供發布")
+    kex.add_argument("--out", help="輸出檔，預設 data/export/knowledge.db.xz")
+    kex.add_argument("--fp32", action="store_true", help="向量保留 float32（預設轉 float16，檔案小一半）")
+    kmf = ksp.add_parser("manifest", help="把論文清單寫成 kb/papers.tsv（進 git）")
+    kmf.add_argument("--out")
     ksp.add_parser("embed")
     ks = ksp.add_parser("search"); ks.add_argument("query"); ks.add_argument("-k", type=int, default=5)
     ks.add_argument("--topic"); ks.add_argument("--bm25-only", action="store_true")

@@ -30,5 +30,5 @@
 - 同步：`sync daily` / `sync activities --days N` / `sync all`
 - 看 AI 拿到什麼：`tool preflight`、`tool get_health_status`
 - 記憶：`context show|note|event|interest`
-- 知識庫：`kb search` / `kb build --topics X` / `kb stats`
+- 知識庫：`kb download`（抓發布版）/ `kb search` / `kb build --manifest`（照 kb/papers.tsv 重建）/ `kb build --topics X` / `kb stats`；發布新版：`kb export` + `kb manifest`（HANDOFF §7）
 - 網路搜尋：`web list` / `web show ID`；`web search "..." --reason ...` 會真的上網（花錢）並寫進真實資料庫，測試請用 `scripts/ask.py --copy`

@@ -6,13 +6,23 @@
 索引：
 * data/knowledge.db：kb_papers / kb_chunks（embedding BLOB）/ kb_fts（FTS5 BM25）
 * 檢索 = 向量餘弦 + BM25，Reciprocal Rank Fusion 合併
+發布（公開 repo 不放 217 MB 的資料庫）：
+* kb export  → knowledge.db.xz（向量轉 float16、去掉可重建的 FTS 索引，約 70 MB）掛在 GitHub Release
+* kb download → 抓回來、驗 sha256、解壓、重建 FTS；embedding BLOB 可以是 float16 或 float32，載入時依長度判斷
+* kb manifest → kb/papers.tsv（論文清單，進 git）；kb build --manifest 照清單重抓同一批論文（不靠 PubMed 排序）
 """
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import logging
+import lzma
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -28,6 +38,8 @@ log = logging.getLogger(__name__)
 
 KB_DB = config.DATA_DIR / "knowledge.db"
 KB_RAW = config.DATA_DIR / "knowledge_raw"
+KB_MANIFEST = config.PROJECT_ROOT / "kb" / "papers.tsv"     # 論文清單（進 git）
+MANIFEST_FIELDS = ["pmid", "pmcid", "doi", "year", "evidence", "fulltext", "topics", "journal", "title"]
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 EMBED_MODEL = "text-embedding-3-small"
@@ -280,6 +292,12 @@ class Embedder:
         return out / norms
 
 
+def _vec(blob: bytes) -> np.ndarray:
+    """embedding BLOB → float32 向量。下載的知識庫存 float16（省一半），自己建的是 float32，依長度判斷。"""
+    dt = np.float16 if len(blob) == EMBED_DIM * 2 else np.float32
+    return np.frombuffer(blob, dtype=dt).astype(np.float32)
+
+
 # ============ 知識庫 ============
 
 class KnowledgeBase:
@@ -322,6 +340,15 @@ class KnowledgeBase:
         self.conn.commit()
         return n
 
+    def add_topics(self, pmid: str, topics: Iterable[str]) -> None:
+        """已存在的論文掛上主題（不重複）。"""
+        row = self.conn.execute("SELECT topics FROM kb_papers WHERE pmid=?", (pmid,)).fetchone()
+        if not row:
+            return
+        merged = sorted(set(json.loads(row["topics"] or "[]")) | {t for t in topics if t})
+        self.conn.execute("UPDATE kb_papers SET topics=? WHERE pmid=?", (json.dumps(merged), pmid))
+        self.conn.commit()
+
     def add_fulltext(self, pmid: str, sections: list[tuple[str, str]]) -> int:
         paper = self.conn.execute("SELECT title, journal, year FROM kb_papers WHERE pmid=?", (pmid,)).fetchone()
         header = f"{paper['title']} ({paper['journal']} {paper['year'] or ''})\n" if paper else ""
@@ -358,7 +385,7 @@ class KnowledgeBase:
     def _load_matrix(self) -> None:
         rows = self.conn.execute("SELECT id, embedding FROM kb_chunks WHERE embedding IS NOT NULL").fetchall()
         self._ids = np.array([r["id"] for r in rows], dtype=np.int64)
-        self._matrix = (np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+        self._matrix = (np.vstack([_vec(r["embedding"]) for r in rows])
                         if rows else np.zeros((0, EMBED_DIM), dtype=np.float32))
 
     def search(self, query: str, k: int = 6, topic: Optional[str] = None, embedder: Optional[Embedder] = None,
@@ -484,7 +511,7 @@ def build(kb: KnowledgeBase, topics: Optional[list[str]] = None, per_topic_hq: i
         # 已存在的也要掛上主題
         for pid in ids:
             if pid in existing:
-                kb.add_papers([{"pmid": pid, "title": "x", "abstract": "x", "authors": [], "journal": "", "year": None, "pub_types": [], "mesh": []}], t)
+                kb.add_topics(pid, [t])
         report[t] = {"found": len(ids), "added": added}
         log.info("topic %s: %d 篇（新增 %d）", t, len(ids), added)
 
@@ -518,3 +545,205 @@ def build(kb: KnowledgeBase, topics: Optional[list[str]] = None, per_topic_hq: i
         report["embed_tokens"] = emb.tokens
     report["stats"] = kb.stats()
     return report
+
+
+def evidence_class(pub_types: list[str]) -> str:
+    """kb stats 用的證據等級分類：meta / sysrev / rct / review / other。"""
+    joined = " ".join(pub_types)
+    if "Meta-Analysis" in joined:
+        return "meta"
+    if "Systematic Review" in joined:
+        return "sysrev"
+    if "Randomized" in joined:
+        return "rct"
+    if "Review" in joined:
+        return "review"
+    return "other"
+
+
+# ============ 論文清單（manifest；進 git，讓別人重建同一批論文） ============
+
+def write_manifest(kb: KnowledgeBase, path: Path = KB_MANIFEST) -> int:
+    """把知識庫的論文清單寫成 TSV（只有書目資料，沒有摘要全文，約 400 KB）。依 PMID 排序，diff 穩定。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = kb.conn.execute("SELECT pmid, pmcid, doi, year, journal, title, pub_types, topics, fulltext_status FROM kb_papers").fetchall()
+    rows = sorted(rows, key=lambda r: int(r["pmid"]) if str(r["pmid"]).isdigit() else 0)
+    clean = lambda x: " ".join(str(x or "").split())   # noqa: E731  去掉 tab / 換行
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
+        w.writerow(MANIFEST_FIELDS)
+        for r in rows:
+            w.writerow([r["pmid"], clean(r["pmcid"]), clean(r["doi"]), r["year"] or "",
+                        evidence_class(json.loads(r["pub_types"] or "[]")), r["fulltext_status"] or "",
+                        ",".join(json.loads(r["topics"] or "[]")), clean(r["journal"]), clean(r["title"])])
+    return len(rows)
+
+
+def read_manifest(path: Path = KB_MANIFEST) -> list[dict[str, Any]]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"找不到論文清單 {path}")
+    out: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            if not (row.get("pmid") or "").strip():
+                continue
+            row["topics"] = [t for t in (row.get("topics") or "").split(",") if t]
+            out.append(row)
+    return out
+
+
+def build_from_manifest(kb: KnowledgeBase, path: Path = KB_MANIFEST, fulltext: bool = True, embed: bool = True,
+                        retry_errors: bool = False) -> dict[str, Any]:
+    """照清單抓同一批論文（PubMed efetch 每批 100 篇），再走原本的全文 + embedding 流程。
+    清單標 fulltext=none 的（上次確認沒有開放全文）直接標記，不再向 Europe PMC 試。已存在的論文略過，可重複執行。"""
+    rows = read_manifest(path)
+    existing = {r["pmid"] for r in kb.conn.execute("SELECT pmid FROM kb_papers")}
+    todo = [r for r in rows if r["pmid"] not in existing]
+    log.info("清單 %d 篇，已有 %d 篇，要抓 %d 篇", len(rows), len(rows) - len(todo), len(todo))
+    added = missing = 0
+    for i in range(0, len(todo), 100):
+        batch = todo[i:i + 100]
+        fetched = {p["pmid"]: p for p in pubmed_fetch([r["pmid"] for r in batch])}
+        for r in batch:
+            p = fetched.get(r["pmid"])
+            if not p:
+                missing += 1
+                continue
+            topics = r["topics"] or ["manifest"]
+            if kb.add_papers([p], topics[0]):
+                added += 1
+                kb.add_topics(r["pmid"], topics[1:])
+                if (r.get("fulltext") or "") == "none":
+                    kb.mark_fulltext(r["pmid"], "none")
+        log.info("manifest 進度 %d/%d（新增 %d，PubMed 找不到 %d）", min(i + 100, len(todo)), len(todo), added, missing)
+    # 清單上已有的論文也補主題
+    for r in rows:
+        if r["pmid"] in existing and r["topics"]:
+            kb.add_topics(r["pmid"], r["topics"])
+    report = build(kb, topics=[], fulltext=fulltext, embed=embed, retry_errors=retry_errors)   # topics=[]：不重搜，只補全文/向量
+    report.update({"manifest": len(rows), "added": added, "missing": missing})
+    return report
+
+
+# ============ 打包 / 下載（GitHub Release 資產） ============
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def export_pack(src: Path = KB_DB, out: Optional[Path] = None, fp16: bool = True) -> dict[str, Any]:
+    """把知識庫打包成可發布的 knowledge.db.xz（+ .sha256）：
+    複本 → 向量轉 float16（餘弦誤差 < 2e-4，排序不變）→ 清掉 FTS 索引（下載端重建）→ VACUUM → xz。"""
+    src = Path(src)
+    if not src.exists():
+        raise FileNotFoundError(f"找不到知識庫 {src}")
+    out = Path(out or (config.DATA_DIR / "export" / "knowledge.db.xz"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp.db")
+    if tmp.exists():
+        tmp.unlink()
+    c = sqlite3.connect(str(src))
+    c.execute("VACUUM INTO ?", (str(tmp),))
+    c.close()
+    d = sqlite3.connect(str(tmp))
+    papers = d.execute("SELECT COUNT(*) FROM kb_papers").fetchone()[0]
+    chunks = d.execute("SELECT COUNT(*) FROM kb_chunks").fetchone()[0]
+    if fp16:
+        rows = d.execute("SELECT id, embedding FROM kb_chunks WHERE embedding IS NOT NULL AND length(embedding)=?", (EMBED_DIM * 4,)).fetchall()
+        d.executemany("UPDATE kb_chunks SET embedding=? WHERE id=?",
+                      [(np.frombuffer(b, dtype=np.float32).astype(np.float16).tobytes(), i) for i, b in rows])
+    d.execute("INSERT INTO kb_fts(kb_fts) VALUES('delete-all')")
+    d.commit()
+    d.execute("VACUUM")
+    d.close()
+    raw_bytes = tmp.stat().st_size
+    with tmp.open("rb") as f, lzma.open(out, "wb", preset=6) as z:
+        shutil.copyfileobj(f, z, 1 << 20)
+    tmp.unlink()
+    sha = _sha256(out)
+    out.with_name(out.name + ".sha256").write_text(f"{sha}  {out.name}\n", encoding="utf-8")
+    return {"path": str(out), "sha256": sha, "papers": papers, "chunks": chunks,
+            "raw_mb": round(raw_bytes / 1e6, 1), "packed_mb": round(out.stat().st_size / 1e6, 1), "fp16": fp16}
+
+
+def _download(url: str, dst: Path) -> None:
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        last = 0
+        with dst.open("wb") as f:
+            for block in r.iter_content(1 << 20):
+                f.write(block)
+                done += len(block)
+                if done - last >= 20 << 20:
+                    last = done
+                    log.info("下載 %d / %d MB", done >> 20, total >> 20)
+
+
+def _expected_sha(src: str, local: Optional[Path]) -> Optional[str]:
+    """同名 .sha256 檔（本機同目錄或同一網址 + .sha256）；沒有就不驗。"""
+    try:
+        if src.startswith(("http://", "https://")):
+            r = requests.get(src + ".sha256", timeout=30)
+            text = r.text if r.status_code == 200 else ""
+        else:
+            p = Path(src).with_name(Path(src).name + ".sha256")
+            text = p.read_text(encoding="utf-8") if p.exists() else ""
+    except requests.RequestException:
+        return None
+    first = text.split()
+    return first[0].lower() if first and len(first[0]) == 64 else None
+
+
+def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = False) -> dict[str, Any]:
+    """下載（或從本機檔）安裝知識庫：驗 sha256 → 解壓到暫存檔 → 重建 FTS → 換掉 data/knowledge.db。
+    已有論文的知識庫不覆蓋，除非 force。Telegram bot 跑著的話換完要重啟才會用到新檔。"""
+    src = src or config.KB_PACK_URL
+    dst = Path(dst)
+    if dst.exists() and not force:
+        try:
+            n = sqlite3.connect(str(dst)).execute("SELECT COUNT(*) FROM kb_papers").fetchone()[0]
+        except sqlite3.DatabaseError:
+            n = 0
+        if n:
+            raise RuntimeError(f"{dst} 已有 {n} 篇論文；要覆蓋請加 --force")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="kb_pack_", dir=str(dst.parent)))
+    try:
+        if src.startswith(("http://", "https://")):
+            packed = work / "knowledge.db.xz"
+            log.info("下載 %s", src)
+            _download(src, packed)
+        else:
+            packed = Path(src).expanduser()
+            if not packed.exists():
+                raise FileNotFoundError(f"找不到 {packed}")
+        expected = _expected_sha(src, packed)
+        actual = _sha256(packed)
+        if expected and expected != actual:
+            raise RuntimeError(f"sha256 不符：預期 {expected[:12]}…，實際 {actual[:12]}…（檔案損毀或被改過）")
+        tmp_db = work / "knowledge.db"
+        with lzma.open(packed, "rb") as z, tmp_db.open("wb") as f:
+            shutil.copyfileobj(z, f, 1 << 20)
+        d = sqlite3.connect(str(tmp_db))
+        d.executescript(DDL)
+        d.execute("INSERT INTO kb_fts(kb_fts) VALUES('rebuild')")
+        d.commit()
+        d.close()
+        os.replace(tmp_db, dst)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    kb = KnowledgeBase(dst)
+    try:
+        st = kb.stats()
+    finally:
+        kb.close()
+    return {"path": str(dst), "source": src, "sha256": actual, "verified": bool(expected), "size_mb": round(dst.stat().st_size / 1e6, 1), "stats": st}
+
