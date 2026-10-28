@@ -25,7 +25,7 @@
 ## 快速開始
 
 ```bash
-git clone https://github.com/shun2249/garmin-ai-coach.git && cd garmin-ai-coach
+git clone https://github.com/shun2249/garmincoach.git && cd garmincoach
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && chmod 600 .env       # 填 GARMIN_EMAIL / GARMIN_PASSWORD / OPENAI_API_KEY（Telegram 可晚點）
 P=".venv/bin/python -m garmin_coach"

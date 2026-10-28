@@ -41,7 +41,7 @@ OPENAI_DAILY_BUDGET_USD = float(os.getenv("OPENAI_DAILY_BUDGET_USD", "2"))
 # PubMed E-utilities 禮貌參數用的聯絡 email（可空白；不要用 Garmin 帳號）
 PUBMED_EMAIL = os.getenv("PUBMED_EMAIL", "")
 # 預建知識庫（kb download）的下載位置：GitHub Release 資產 knowledge.db.xz（旁邊有 .sha256）；也可以填本機檔案路徑
-KB_PACK_URL = os.getenv("KB_PACK_URL", "https://github.com/shun2249/garmin-ai-coach/releases/download/kb-2026-10-28/knowledge.db.xz")
+KB_PACK_URL = os.getenv("KB_PACK_URL", "https://github.com/shun2249/garmincoach/releases/download/kb-2026-10-28/knowledge.db.xz")
 
 # 網路搜尋（OpenAI Responses API 內建 web_search）：費用高，只在本地資料（Garmin + 論文知識庫）拿不到時放行，結果完整記錄並快取
 WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") == "1"
