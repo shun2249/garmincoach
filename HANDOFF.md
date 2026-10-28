@@ -83,7 +83,7 @@ garmin_project/
 ### 4.4 知識庫（RAG）
 - `TOPICS`（knowledge.py）14 個主題各一組 PubMed 查詢（10 個訓練/營養/恢復 + 4 個運動醫學：injury_running / injury_cycling / injury_prevention / sports_medicine，2026-10-20 加）；`kb build` 依主題抓 HQ（review/meta/RCT/systematic）與一般各 N 篇，有 PMCID 的從 Europe PMC 抓 JATS 全文。
 - 切段 2400 字/重疊 250；`text-embedding-3-small` 1536 維正規化 float32 存 BLOB；FTS5 做 BM25；查詢用 RRF 合併，每篇只回一段。
-- 發布（2026-10-28）：`export_pack` 把複本的向量轉 float16（餘弦誤差 < 2e-4，top-5 幾乎不變）、`kb_fts` delete-all、VACUUM、xz → 69 MB；`import_pack` 下載、對 `.sha256`、解壓、`kb_fts` rebuild（3 秒）、`os.replace` 換檔。`_vec()` 依 BLOB 長度判斷 float16 / float32，所以下載版之後 `kb build` 新增的 float32 段可以混用。`write_manifest` / `build_from_manifest`：`kb/papers.tsv` 只有書目；重建時 efetch 每批 100 篇，清單標 `fulltext=none` 的不再向 Europe PMC 試。
+- 發布（2026-10-28）：`export_pack` 把複本的向量轉 float16（餘弦誤差 < 2e-4，top-5 幾乎不變）、`kb_fts` delete-all、VACUUM、xz → 69 MB；`import_pack` 下載（單檔或 `.001`… 分片接起來）、對 sha256（預設來源用程式裡釘住的 `KB_PACK_SHA256`，其他來源看網址旁的 `.sha256`）、解壓、`kb_fts` rebuild（3 秒）、`os.replace` 換檔。`_vec()` 依 BLOB 長度判斷 float16 / float32，所以下載版之後 `kb build` 新增的 float32 段可以混用。`write_manifest` / `build_from_manifest`：`kb/papers.tsv` 只有書目；重建時 efetch 每批 100 篇，清單標 `fulltext=none` 的不再向 Europe PMC 試。
 - 模型透過 `search_knowledge(query, k, topic)` 查，把結論融進回答；2026-10-28 起規則 12 要求**不要**標作者年份或論文出處（之前是標「（第一作者 年份）」）。工具仍回傳 citation/pmid 給 get_paper 用。
 
 ### 4.5 網路搜尋（search_web，2026-10-21）
@@ -193,9 +193,9 @@ python -m garmin_coach sync details --limit 50                # 剩下的分批�
 
 ### 發布知識庫（公開版）
 知識庫有更新（加主題、增量 build）後：
-1. `python -m garmin_coach kb export` → `data/export/knowledge.db.xz` + `.sha256`（約 25 秒，69 MB）。
-2. GitHub 建 Release，tag 用 `kb-YYYY-MM-DD`，兩個檔都上傳（資產名稱要維持 `knowledge.db.xz`）。
-3. `config.py` 的 `KB_PACK_URL` 預設值與 `.env.example` 的範例改成新 tag。
+1. `python -m garmin_coach kb export` → `data/export/knowledge.db.xz` + `.sha256` + 分片 `.001`、`.002`、`.003`（25 MiB 一片；約 25 秒，69 MB）。
+2. GitHub 建 Release，tag 用 `kb-YYYY-MM-DD`，上傳 `.sha256` 加上單檔或全部分片（檔名不要改；`import_pack` 先抓單檔，404 就逐片抓到 404 為止再接起來）。分片是因為對話介面傳檔上限 30 MiB，沒有這個限制就傳單檔。
+3. `config.py` 的 `KB_PACK_URL` 預設值改成新 tag、`KB_PACK_SHA256` 改成 export 印出的 sha256，`.env.example` 的範例跟著改。
 4. `python -m garmin_coach kb manifest` 重寫 `kb/papers.tsv`，連同上面的改動一起 commit。
 別人更新：`kb download --force`，再重啟 bot。
 

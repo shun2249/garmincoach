@@ -45,10 +45,14 @@ assert kb.nearest(qvec, k=1)[0]["pmid"] == "1002"
 assert kb.search("polarized", k=3)[0]["pmid"] == "1001"                    # 純 BM25（沒給向量）
 print("build + search ok")
 
-# 2) export → import 往返
+# 2) export → import 往返（分片切小，驗證接回來）
+K.PACK_PART_BYTES = 4096
 pack = tmp / "pack" / "knowledge.db.xz"
 rep = K.export_pack(kb.path, pack)
 assert pack.exists() and pack.with_name("knowledge.db.xz.sha256").exists() and rep["papers"] == 3 and rep["chunks"] == 5 and rep["fp16"], rep
+parts = sorted(pack.parent.glob("knowledge.db.xz.[0-9][0-9][0-9]"))
+assert len(parts) >= 2 and [p.name for p in parts] == [f"knowledge.db.xz.{i:03d}" for i in range(1, len(parts) + 1)] and len(rep["parts"]) == len(parts)
+assert b"".join(p.read_bytes() for p in parts) == pack.read_bytes()
 assert rep["sha256"] == pack.with_name("knowledge.db.xz.sha256").read_text().split()[0]
 dst = tmp / "k2.db"
 r = K.import_pack(str(pack), dst=dst)
@@ -78,6 +82,41 @@ try:
     K.import_pack(str(tmp / "nope.xz"), dst=tmp / "k4.db"); raise AssertionError()
 except FileNotFoundError:
     pass
+# 只有分片（單檔不在）：本機接回來；假網址：單檔 404 → 逐片抓到 404 為止
+good_sha = K._sha256(pack); pack.with_name("knowledge.db.xz.sha256").write_text(f"{good_sha}  knowledge.db.xz\n")
+single = pack.read_bytes(); pack.unlink()
+assert K.import_pack(str(pack), dst=tmp / "k6.db")["stats"]["chunks"] == 5
+import types, requests
+served = {f"https://x/kb.xz.{i:03d}": p.read_bytes() for i, p in enumerate(parts, 1)}; served["https://x/kb.xz.sha256"] = f"{good_sha}  kb.xz\n".encode()
+log_dl = []
+def fake_download(url, dst):
+    log_dl.append(url)
+    if url not in served: raise requests.HTTPError(response=types.SimpleNamespace(status_code=404))
+    Path(dst).write_bytes(served[url])
+real_get = requests.get
+requests.get = lambda url, **kw: types.SimpleNamespace(status_code=200, text=served[url].decode()) if url in served else types.SimpleNamespace(status_code=404, text="")
+K._download = fake_download
+r = K.import_pack("https://x/kb.xz", dst=tmp / "k7.db")
+assert r["verified"] and r["stats"]["chunks"] == 5 and log_dl[0] == "https://x/kb.xz" and log_dl[-1] == f"https://x/kb.xz.{len(parts) + 1:03d}", (r, log_dl)
+try:
+    K.import_pack("https://x/none.xz", dst=tmp / "k8.db"); raise AssertionError("單檔與分片都 404 應該失敗")
+except requests.HTTPError:
+    pass
+# 期望值順序：--sha256 參數 > 預設來源的 KB_PACK_SHA256 > 網址旁的 .sha256
+try:
+    K.import_pack("https://x/kb.xz", dst=tmp / "k9.db", sha256="f" * 64); raise AssertionError("參數 sha256 不符應該失敗")
+except RuntimeError as e:
+    assert "sha256" in str(e)
+from garmin_coach import config
+config.KB_PACK_URL, config.KB_PACK_SHA256 = "https://x/kb.xz", good_sha
+assert K.import_pack(None, dst=tmp / "k10.db")["verified"]
+config.KB_PACK_SHA256 = "e" * 64
+try:
+    K.import_pack(None, dst=tmp / "k11.db"); raise AssertionError("釘住的 sha256 不符應該失敗")
+except RuntimeError:
+    pass
+requests.get = real_get
+pack.write_bytes(single)
 assert K._expected_sha(str(tmp / "nope.xz"), None) is None
 print("export/import ok")
 

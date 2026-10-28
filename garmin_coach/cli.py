@@ -229,7 +229,7 @@ def cmd_tool(args: argparse.Namespace) -> None:
 def cmd_kb(args: argparse.Namespace) -> None:
     from .knowledge import KB_DB, KB_MANIFEST, TOPICS, Embedder, KnowledgeBase, build, build_from_manifest, export_pack, import_pack, write_manifest
     if args.kb_cmd == "download":        # 不先開 KnowledgeBase（會建空檔）
-        r = import_pack(args.source, force=args.force)
+        r = import_pack(args.source, force=args.force, sha256=args.sha256)
         st = r.pop("stats")
         r.update({"papers": st["papers"], "with_fulltext": st["with_fulltext"], "chunks": st["chunks"], "embedded": st["embedded"]})
         _print_json(r)
@@ -387,6 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     kdl = ksp.add_parser("download", help="下載預建知識庫（GitHub Release 的 knowledge.db.xz）並安裝到 data/")
     kdl.add_argument("source", nargs="?", help="網址或本機 .xz 檔；預設 KB_PACK_URL")
     kdl.add_argument("--force", action="store_true", help="覆蓋已有論文的知識庫")
+    kdl.add_argument("--sha256", help="期望的 sha256（預設來源用 KB_PACK_SHA256；其他來源看網址旁的 .sha256）")
     kex = ksp.add_parser("export", help="把知識庫打包成 knowledge.db.xz（+ .sha256）供發布")
     kex.add_argument("--out", help="輸出檔，預設 data/export/knowledge.db.xz")
     kex.add_argument("--fp32", action="store_true", help="向量保留 float32（預設轉 float16，檔案小一半）")

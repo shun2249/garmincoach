@@ -8,7 +8,7 @@
 * 檢索 = 向量餘弦 + BM25，Reciprocal Rank Fusion 合併
 發布（公開 repo 不放 217 MB 的資料庫）：
 * kb export  → knowledge.db.xz（向量轉 float16、去掉可重建的 FTS 索引，約 70 MB）掛在 GitHub Release
-* kb download → 抓回來、驗 sha256、解壓、重建 FTS；embedding BLOB 可以是 float16 或 float32，載入時依長度判斷
+* kb download → 抓回來（單檔或 .001/.002… 分片，分片會接起來）、驗 sha256、解壓、重建 FTS；embedding BLOB 可以是 float16 或 float32，載入時依長度判斷
 * kb manifest → kb/papers.tsv（論文清單，進 git）；kb build --manifest 照清單重抓同一批論文（不靠 PubMed 排序）
 """
 from __future__ import annotations
@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 KB_DB = config.DATA_DIR / "knowledge.db"
 KB_RAW = config.DATA_DIR / "knowledge_raw"
 KB_MANIFEST = config.PROJECT_ROOT / "kb" / "papers.tsv"     # 論文清單（進 git）
+PACK_PART_BYTES = 25 * 1024 * 1024   # 發布包分片大小（聊天介面、部分上傳工具有 30 MiB 限制）；kb download 會自動接回來
 MANIFEST_FIELDS = ["pmid", "pmcid", "doi", "year", "evidence", "fulltext", "topics", "journal", "title"]
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
@@ -668,8 +669,65 @@ def export_pack(src: Path = KB_DB, out: Optional[Path] = None, fp16: bool = True
     tmp.unlink()
     sha = _sha256(out)
     out.with_name(out.name + ".sha256").write_text(f"{sha}  {out.name}\n", encoding="utf-8")
+    parts = split_pack(out)
     return {"path": str(out), "sha256": sha, "papers": papers, "chunks": chunks,
-            "raw_mb": round(raw_bytes / 1e6, 1), "packed_mb": round(out.stat().st_size / 1e6, 1), "fp16": fp16}
+            "raw_mb": round(raw_bytes / 1e6, 1), "packed_mb": round(out.stat().st_size / 1e6, 1), "fp16": fp16,
+            "parts": [str(x) for x in parts]}
+
+
+def split_pack(out: Path) -> list[Path]:
+    """把發布包切成 .001、.002… 分片（舊分片先刪）；Release 上傳單檔或分片都可以。"""
+    for old in out.parent.glob(out.name + ".[0-9][0-9][0-9]"):
+        old.unlink()
+    parts: list[Path] = []
+    with out.open("rb") as f:
+        while True:
+            block = f.read(PACK_PART_BYTES)
+            if not block:
+                break
+            part = out.with_name(f"{out.name}.{len(parts) + 1:03d}")
+            part.write_bytes(block)
+            parts.append(part)
+    return parts
+
+
+def _fetch_pack(src: str, work: Path) -> Path:
+    """取得發布包：網址或本機路徑，單檔優先，沒有就找 .001、.002… 分片接起來。"""
+    if src.startswith(("http://", "https://")):
+        packed = work / "knowledge.db.xz"
+        try:
+            log.info("下載 %s", src)
+            _download(src, packed)
+            return packed
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
+        n = 0
+        with packed.open("wb") as out:
+            while True:
+                part = work / "part"
+                try:
+                    log.info("下載分片 %03d", n + 1)
+                    _download(f"{src}.{n + 1:03d}", part)
+                except requests.HTTPError as e:
+                    if n and e.response is not None and e.response.status_code == 404:
+                        break
+                    raise
+                out.write(part.read_bytes())
+                part.unlink()
+                n += 1
+        return packed
+    p = Path(src).expanduser()
+    if p.exists():
+        return p
+    parts = sorted(p.parent.glob(p.name + ".[0-9][0-9][0-9]"))
+    if not parts:
+        raise FileNotFoundError(f"找不到 {p}（也沒有分片 {p.name}.001…）")
+    packed = work / "knowledge.db.xz"
+    with packed.open("wb") as out:
+        for q in parts:
+            out.write(q.read_bytes())
+    return packed
 
 
 def _download(url: str, dst: Path) -> None:
@@ -702,9 +760,10 @@ def _expected_sha(src: str, local: Optional[Path]) -> Optional[str]:
     return first[0].lower() if first and len(first[0]) == 64 else None
 
 
-def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = False) -> dict[str, Any]:
-    """下載（或從本機檔）安裝知識庫：驗 sha256 → 解壓到暫存檔 → 重建 FTS → 換掉 data/knowledge.db。
+def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = False, sha256: Optional[str] = None) -> dict[str, Any]:
+    """下載（或從本機檔）安裝知識庫：單檔或分片 → 驗 sha256 → 解壓到暫存檔 → 重建 FTS → 換掉 data/knowledge.db。
     已有論文的知識庫不覆蓋，除非 force。Telegram bot 跑著的話換完要重啟才會用到新檔。"""
+    use_default = not src
     src = src or config.KB_PACK_URL
     dst = Path(dst)
     if dst.exists() and not force:
@@ -717,15 +776,9 @@ def import_pack(src: Optional[str] = None, dst: Path = KB_DB, force: bool = Fals
     dst.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="kb_pack_", dir=str(dst.parent)))
     try:
-        if src.startswith(("http://", "https://")):
-            packed = work / "knowledge.db.xz"
-            log.info("下載 %s", src)
-            _download(src, packed)
-        else:
-            packed = Path(src).expanduser()
-            if not packed.exists():
-                raise FileNotFoundError(f"找不到 {packed}")
-        expected = _expected_sha(src, packed)
+        packed = _fetch_pack(src, work)
+        # 期望的 sha256：參數 > 預設網址的 KB_PACK_SHA256 > 網址（或檔案）旁邊的 .sha256；都沒有就不驗
+        expected = (sha256 or "").strip().lower() or (config.KB_PACK_SHA256 if use_default else "") or _expected_sha(src, packed)
         actual = _sha256(packed)
         if expected and expected != actual:
             raise RuntimeError(f"sha256 不符：預期 {expected[:12]}…，實際 {actual[:12]}…（檔案損毀或被改過）")

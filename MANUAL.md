@@ -376,9 +376,9 @@ $P kb stats
 | 照清單重建 | `kb build --manifest` | 約 10 分鐘、embedding 約 US$0.11 | 同一批論文，自己向量化；Europe PMC 全文可能略有增減 |
 | 重新搜尋 | `kb build` | 約 15 分鐘、embedding 約 US$0.11 | 依 PubMed 當天排序，收錄不同 |
 
-`kb download` 從 `KB_PACK_URL`（預設作者在 GitHub Release 掛的 `knowledge.db.xz`，旁邊有 `.sha256`）下載到 `data/` 的暫存目錄，sha256 不符就中止；解壓後 `kb_fts` rebuild、`os.replace` 換成 `data/knowledge.db`。已有論文的知識庫不覆蓋，`--force` 才會；bot 跑著要重啟才用到新檔。`kb/papers.tsv` 是書目清單（PMID / PMCID / DOI / 年份 / 證據等級 / 是否有全文 / 主題 / 期刊 / 標題，約 470 KB），`kb build --manifest` 用 efetch 每批 100 篇抓，清單標 `fulltext=none` 的不再向 Europe PMC 試。
+`kb download` 從 `KB_PACK_URL`（預設作者在 GitHub Release 掛的 `knowledge.db.xz`，旁邊有 `.sha256`）下載到 `data/` 的暫存目錄，sha256 不符就中止（預設來源對 `KB_PACK_SHA256`，其他來源對網址旁的 `.sha256`，`--sha256` 可指定）；解壓後 `kb_fts` rebuild、`os.replace` 換成 `data/knowledge.db`。已有論文的知識庫不覆蓋，`--force` 才會；bot 跑著要重啟才用到新檔。`kb/papers.tsv` 是書目清單（PMID / PMCID / DOI / 年份 / 證據等級 / 是否有全文 / 主題 / 期刊 / 標題，約 470 KB），`kb build --manifest` 用 efetch 每批 100 篇抓，清單標 `fulltext=none` 的不再向 Europe PMC 試。
 
-**發布知識庫（作者）**：`kb export` 把複本的向量轉 float16（餘弦誤差 < 2e-4，實測 20 組查詢 19 組前五名完全相同）、清掉可重建的 FTS 索引、VACUUM、xz 壓縮，約 25 秒得到 69 MB 的 `data/export/knowledge.db.xz` 與 `.sha256`；上傳到 tag `kb-YYYY-MM-DD` 的 GitHub Release，改 `config.KB_PACK_URL` 預設值與 `.env.example`，`kb manifest` 重寫清單後一起 commit。發布包內容是 PubMed 摘要與 Europe PMC 開放取用全文，版權屬出版者與作者，只供個人研究檢索。
+**發布知識庫（作者）**：`kb export` 把複本的向量轉 float16（餘弦誤差 < 2e-4，實測 20 組查詢 19 組前五名完全相同）、清掉可重建的 FTS 索引、VACUUM、xz 壓縮，約 25 秒得到 69 MB 的 `data/export/knowledge.db.xz`、`.sha256` 與 25 MiB 一片的 `.001`、`.002`… 分片；上傳到 tag `kb-YYYY-MM-DD` 的 GitHub Release（傳單檔或傳分片都可以，`kb download` 先抓單檔、404 就逐片抓再接起來），改 `config.KB_PACK_URL` / `KB_PACK_SHA256` 預設值與 `.env.example`，`kb manifest` 重寫清單後一起 commit。發布包內容是 PubMed 摘要與 Europe PMC 開放取用全文，版權屬出版者與作者，只供個人研究檢索。
 
 **檢索（`KnowledgeBase.search`）**
 
@@ -718,7 +718,7 @@ home 目錄本身是個沒有 remote 的 git repo，已在 `~/.git/info/exclude`
 | 改分流 | `ROUTER_PROMPT`、`classify_depth`、`_FOLLOWUP` | `tests/test_router.py` |
 | 換模型 | `.env` 的 `OPENAI_MODEL` / `OPENAI_DEEP_MODEL` / `OPENAI_EXTRACT_MODEL` / `WEB_SEARCH_MODEL` | 新模型要先加進 `pricing.PRICES`，否則費用記 0；非 Responses API 的模型不支援 |
 | 改知識庫主題 | `knowledge.TOPICS` 加 key 與 PubMed 查詢 | `kb build --topics NEW`；`tools.py` 的 `_KB_TOPICS` enum 跟著 TOPICS；必要時在規則 12 提到 |
-| 更新發布的知識庫 | `kb export` → GitHub Release（tag `kb-YYYY-MM-DD`）→ 改 `config.KB_PACK_URL` 與 `.env.example` → `kb manifest` | 第 7 節；別人 `kb download --force` 後重啟 bot |
+| 更新發布的知識庫 | `kb export` → GitHub Release（tag `kb-YYYY-MM-DD`）→ 改 `config.KB_PACK_URL` / `KB_PACK_SHA256` 與 `.env.example` → `kb manifest` | 第 7 節；別人 `kb download --force` 後重啟 bot |
 | 改切段或 embedding 模型 | `knowledge.py` 的 `CHUNK_CHARS` / `EMBED_MODEL` | 全部重建（`kb build`，原始資料在 knowledge_raw 不用重抓）；**網路搜尋門檻要重新校準**（下段） |
 | 改網路搜尋閘門 | `.env` 的 WEB_* 變數；流程在 `tools.py` `search_web`；提示詞在 `websearch.py` | `tests/test_web.py`；用 `web search ... --reason` 實測（會花錢、寫真實 DB） |
 | 加 Telegram 指令 | `telegram_bot.py`：`CoachService` 加方法（在 worker thread 跑）、`CoachBot.cmd_*`、handler 表、`BotCommand` 清單、`HELP` | `tests/test_telegram.py` |
@@ -787,6 +787,7 @@ scripts/botctl.sh status                                    # bot 在跑、沒�
 | WEB_SEARCH_COUNTRY / WEB_SEARCH_TIMEZONE | TW / Asia/Taipei | 搜尋結果偏向的國家與時區 |
 | PUBMED_EMAIL | 空 | kb build 時給 PubMed 的聯絡 email（選填） |
 | KB_PACK_URL | 作者的 GitHub Release | `kb download` 的來源（網址或本機 .xz） |
+| KB_PACK_SHA256 | 預設發布包的值 | 預設來源的期望 sha256；`kb download --sha256` 可指定，其他來源看網址旁的 `.sha256` |
 | TELEGRAM_BOT_TOKEN | （必填） | |
 | TELEGRAM_ALLOWED_USERS | （必填） | 數字 id 或 @username，逗號分隔 |
 | TELEGRAM_IDLE_MINUTES | 30 | 閒置自動結束並整理記憶 |

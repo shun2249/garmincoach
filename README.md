@@ -229,9 +229,9 @@ $P kb stats
 
 `data/` 不進 git，所以知識庫另外走兩條路：
 
-- **預建包**：`kb download` 從 GitHub Release 抓 `knowledge.db.xz`（向量轉 float16、去掉可重建的全文索引後約 70 MB），驗 sha256、解壓、重建索引，放到 `data/knowledge.db`。已有論文的知識庫不會被覆蓋（`--force` 才會）。下載網址在 `KB_PACK_URL`，預設指向作者最近一次發布。
+- **預建包**：`kb download` 從 GitHub Release 抓 `knowledge.db.xz`（向量轉 float16、去掉可重建的全文索引後約 70 MB），驗 sha256、解壓、重建索引，放到 `data/knowledge.db`。已有論文的知識庫不會被覆蓋（`--force` 才會）。下載網址在 `KB_PACK_URL`，預設指向作者最近一次發布，期望的 sha256 釘在 `KB_PACK_SHA256`。
 - **論文清單**：`kb/papers.tsv` 是知識庫的書目清單（進 git，約 470 KB），`kb build --manifest` 照清單向 PubMed / Europe PMC 抓同一批論文並自己向量化，不依賴 PubMed 當天的排序。
-- 作者更新知識庫後：`kb export`（產生 `data/export/knowledge.db.xz` 與 `.sha256`）上傳到新的 Release，改 `KB_PACK_URL` 預設值，`kb manifest` 重寫清單後 commit。
+- 作者更新知識庫後：`kb export`（產生 `data/export/knowledge.db.xz`、`.sha256`，以及 25 MiB 一片的 `.001`、`.002`… 分片）上傳到新的 Release（傳單檔或傳分片都可以，`kb download` 會自動接回來），改 `KB_PACK_URL` 預設值，`kb manifest` 重寫清單後 commit。
 
 預建包裡是 PubMed 摘要與 Europe PMC 開放取用全文，版權屬各論文的出版者與作者（開放全文多為 CC BY / CC BY-NC 授權），這裡只做個人研究用途的檢索；不放心就用 `kb build --manifest` 自己抓。
 

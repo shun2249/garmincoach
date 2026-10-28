@@ -42,6 +42,8 @@ OPENAI_DAILY_BUDGET_USD = float(os.getenv("OPENAI_DAILY_BUDGET_USD", "2"))
 PUBMED_EMAIL = os.getenv("PUBMED_EMAIL", "")
 # 預建知識庫（kb download）的下載位置：GitHub Release 資產 knowledge.db.xz（旁邊有 .sha256）；也可以填本機檔案路徑
 KB_PACK_URL = os.getenv("KB_PACK_URL", "https://github.com/shun2249/garmincoach/releases/download/kb-2026-10-28/knowledge.db.xz")
+# 預設發布包的 sha256（釘在程式裡，網址旁邊沒有 .sha256 檔也能驗）；自己換網址時可改或留空（留空就只看網址旁的 .sha256）
+KB_PACK_SHA256 = os.getenv("KB_PACK_SHA256", "0eb3b01dec0a6428ac9486f504f1775af035d4099df4c2b4e95dd85c37b94491").strip().lower()
 
 # 網路搜尋（OpenAI Responses API 內建 web_search）：費用高，只在本地資料（Garmin + 論文知識庫）拿不到時放行，結果完整記錄並快取
 WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") == "1"
