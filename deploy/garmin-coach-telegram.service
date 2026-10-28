@@ -1,0 +1,22 @@
+# systemd user unit：讓 Telegram bot 開機自動跑、當掉自動重啟
+#   先把下面兩行的 %h/garmin_project 改成你 clone 的路徑（%h = 家目錄）
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/garmin-coach-telegram.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now garmin-coach-telegram
+#   loginctl enable-linger $USER        # 沒登入也要跑
+#   journalctl --user -u garmin-coach-telegram -f   # 看 log
+[Unit]
+Description=Garmin AI coach Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/garmin_project
+ExecStart=%h/garmin_project/.venv/bin/python -m garmin_coach telegram
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

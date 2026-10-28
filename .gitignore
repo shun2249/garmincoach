@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+*.db
+.garminconnect/
+briefs/
+*.log
+*.pid
+.DS_Store
+.idea/
+.vscode/
